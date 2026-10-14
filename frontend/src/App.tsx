@@ -1,3 +1,4 @@
+// @refresh reset
 import { useState } from 'react'
 import { useVideoChat } from './hooks/useVideoChat'
 import { ChatPanel } from './components/ChatPanel'
@@ -20,7 +21,7 @@ export default function App() {
         <section className="conversation" aria-label="영상 통화">
           <VideoStage state={state} client={client} consent={consent}/>
           <ConnectionPanel state={state} client={client} consent={consent} setConsent={setConsent}/>
-          <p className={`notice ${state.error ? 'is-error' : ''}`} id="notice" role="status" aria-live="polite">{state.notice}</p>
+          <p className={`notice ${state.error || state.media.issue ? 'is-error' : ''}`} id="notice" role="status" aria-live="polite">{state.media.issue?.message || state.notice}</p>
         </section>
         <ChatPanel state={state} client={client}/>
       </div>

@@ -7,8 +7,14 @@ export function useVideoChat() {
   useEffect(() => {
     void client.connect()
     const cleanup = () => client.dispose()
+    const restore = (event: PageTransitionEvent) => { if (event.persisted) void client.connect() }
     window.addEventListener('pagehide', cleanup)
-    return () => { window.removeEventListener('pagehide', cleanup); cleanup() }
+    window.addEventListener('pageshow', restore)
+    return () => {
+      window.removeEventListener('pagehide', cleanup)
+      window.removeEventListener('pageshow', restore)
+      cleanup()
+    }
   }, [client])
   return { state, client }
 }
