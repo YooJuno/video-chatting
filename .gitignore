@@ -8,6 +8,7 @@ playwright-report/
 test-results/
 frontend/dist/
 frontend/.vite/
+frontend/.vitest/
 backend/target/
 .tools/
 backend/.mvn/wrapper/maven-wrapper.jar

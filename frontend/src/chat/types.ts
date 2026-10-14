@@ -1,12 +1,22 @@
 export type Mode = 'random' | 'room'
 export type Status = 'idle' | 'preparing' | 'waiting' | 'connecting' | 'connected' | 'reconnecting'
 export type StartAction = 'queue:join' | 'room:create' | 'room:join'
+export type MediaPermission = PermissionState | 'unknown'
+export interface MediaIssue { code: 'insecure' | 'unsupported' | 'policy' | 'permission' | 'missing' | 'busy' | 'constraints' | 'timeout' | 'ended' | 'other'; message: string }
+export interface MediaState {
+  phase: 'idle' | 'requesting' | 'ready' | 'error'
+  cameraPermission: MediaPermission
+  microphonePermission: MediaPermission
+  issue: MediaIssue | null
+}
 export interface IceConfig extends RTCConfiguration { relayOnly: boolean }
 export interface Message { id: string; text: string; kind: 'system' | 'mine' | 'theirs' }
 export interface ChatState {
   mode: Mode
   activeMode: Mode | null
   status: Status
+  preparationStep: 'permissions' | 'server' | null
+  media: MediaState
   online: number
   serverOnline: boolean
   notice: string

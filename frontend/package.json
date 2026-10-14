@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 3305 --strictPort",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && vitest run",
+    "test": "vitest run",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
@@ -13,10 +14,13 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^27.4.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.7"
+    "vite": "^7.3.7",
+    "vitest": "^5.0.4"
   }
 }

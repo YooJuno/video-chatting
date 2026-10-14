@@ -14,6 +14,8 @@ export class PeerSession {
   private connectionTimer: ReturnType<typeof setTimeout>
   private disconnectTimer?: ReturnType<typeof setTimeout>
   private closed = false
+  private messageWindowStart = Date.now()
+  private messageCount = 0
 
   constructor(readonly id: string, stream: MediaStream, configuration: RTCConfiguration, private readonly callbacks: Callbacks) {
     this.connection = new RTCPeerConnection(configuration)
@@ -74,16 +76,20 @@ export class PeerSession {
   }
 
   private attachChannel(channel: RTCDataChannel) {
-    if (this.closed) { channel.close(); return }
+    if (this.closed || channel.label !== 'chat' || this.channel) { channel.close(); return }
     this.channel = channel
-    let windowStart = Date.now()
-    let count = 0
-    channel.onopen = () => { if (!this.closed) this.callbacks.chat(true) }
-    channel.onclose = () => { if (!this.closed) this.callbacks.chat(false) }
+    let channelClosed = false
+    const current = () => !this.closed && this.channel === channel && !channelClosed
+    channel.onopen = () => { if (current() && channel.readyState === 'open') this.callbacks.chat(true) }
+    channel.onclose = () => {
+      if (!current()) return
+      channelClosed = true
+      this.callbacks.chat(false)
+    }
     channel.onmessage = event => {
-      if (this.closed || typeof event.data !== 'string' || event.data.length > 2000) return
-      if (Date.now() - windowStart > 1000) { windowStart = Date.now(); count = 0 }
-      if (++count <= 10) this.callbacks.message(event.data)
+      if (!current() || channel.readyState !== 'open' || typeof event.data !== 'string' || event.data.length > 2000) return
+      if (Date.now() - this.messageWindowStart >= 1000) { this.messageWindowStart = Date.now(); this.messageCount = 0 }
+      if (++this.messageCount <= 10) this.callbacks.message(event.data)
     }
   }
 
@@ -97,6 +103,11 @@ export class PeerSession {
     this.closed = true
     clearTimeout(this.connectionTimer)
     clearTimeout(this.disconnectTimer)
+    if (this.channel) {
+      this.channel.onopen = null
+      this.channel.onclose = null
+      this.channel.onmessage = null
+    }
     this.channel?.close()
     this.channel = null
     this.connection.onconnectionstatechange = null

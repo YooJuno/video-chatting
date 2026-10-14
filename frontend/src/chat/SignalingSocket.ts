@@ -4,6 +4,7 @@ export class SignalingSocket {
   private socket: WebSocket | null = null
   private pending: Promise<void> | null = null
   private welcomed = false
+  private cancelPending: (() => void) | null = null
 
   constructor(private readonly receive: (message: ServerMessage) => void, private readonly disconnected: () => void) {}
 
@@ -14,12 +15,14 @@ export class SignalingSocket {
     this.socket = socket
     this.pending = new Promise((resolve, reject) => {
       const timer = setTimeout(() => { socket.close(); reject(new Error('서버 연결 시간이 초과되었습니다.')) }, 10000)
+      this.cancelPending = () => { clearTimeout(timer); reject(new Error('서버 연결이 종료되었습니다.')) }
       socket.onmessage = event => {
         if (this.socket !== socket) return
         let message: ServerMessage
         try { message = JSON.parse(event.data) as ServerMessage } catch { return }
         if (message.type === 'welcome') {
           clearTimeout(timer)
+          this.cancelPending = null
           this.welcomed = true
           resolve()
         }
@@ -33,6 +36,7 @@ export class SignalingSocket {
         this.socket = null
         this.pending = null
         this.welcomed = false
+        this.cancelPending = null
         this.disconnected()
       }
     })
@@ -49,6 +53,8 @@ export class SignalingSocket {
     this.socket = null
     this.pending = null
     this.welcomed = false
+    this.cancelPending?.()
+    this.cancelPending = null
     socket?.close()
   }
 }
