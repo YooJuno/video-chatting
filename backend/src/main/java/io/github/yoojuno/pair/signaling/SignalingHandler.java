@@ -6,6 +6,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.PongMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.adapter.standard.StandardWebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import io.github.yoojuno.pair.matchmaking.MatchmakingService;
 
@@ -21,6 +22,11 @@ public class SignalingHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        if (session instanceof StandardWebSocketSession standard) {
+            standard.getNativeSession().getUserProperties().put("org.apache.tomcat.websocket.BLOCKING_SEND_TIMEOUT", 5000L);
+            standard.getNativeSession().getUserProperties().put("org.apache.tomcat.websocket.SESSION_CLOSE_TIMEOUT", 5000L);
+            standard.getNativeSession().setMaxIdleTimeout(90000L);
+        }
         session.setTextMessageSizeLimit(100000);
         session.setBinaryMessageSizeLimit(1);
         matchmaking.connect(session);
@@ -47,8 +53,7 @@ public class SignalingHandler extends TextWebSocketHandler {
     }
 
     @Override
-    public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
-        session.close(CloseStatus.SERVER_ERROR);
-        matchmaking.disconnect(session.getId());
+    public void handleTransportError(WebSocketSession session, Throwable exception) {
+        matchmaking.transportError(session.getId());
     }
 }

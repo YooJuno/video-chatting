@@ -2,12 +2,12 @@ package io.github.yoojuno.pair.matchmaking;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
 final class ClientSession {
     final String id;
-    final WebSocketSession socket;
+    final ClientTransport transport;
     final Set<String> blocked = new LinkedHashSet<>();
     String callId;
     String roomCode;
@@ -17,9 +17,9 @@ final class ClientSession {
     long rateStart = System.currentTimeMillis();
     int rateCount;
 
-    ClientSession(WebSocketSession socket) {
+    ClientSession(WebSocketSession socket, OutboundDispatcher dispatcher, Consumer<String> failure) {
         this.id = socket.getId();
-        this.socket = new ConcurrentWebSocketSessionDecorator(socket, 5000, 262144);
+        this.transport = new ClientTransport(socket, dispatcher, failure);
     }
 
     void block(String otherId) {

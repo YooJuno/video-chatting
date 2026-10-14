@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -31,35 +33,44 @@ public class MatchmakingService {
     private final Map<String, Room> rooms = new HashMap<>();
     private final Map<String, Call> calls = new HashMap<>();
     private final List<Report> reports = new ArrayList<>();
+    private final Queue<String> failedClients = new ConcurrentLinkedQueue<>();
+    private final OutboundDispatcher outbound;
+    private boolean stopping;
+    private boolean statsDirty;
+    private Map<String, Object> lastStats;
 
     public MatchmakingService(ObjectMapper mapper, ChatProperties properties) {
         this.mapper = mapper;
         this.properties = properties;
+        this.outbound = new OutboundDispatcher(properties.maxClients());
     }
 
     public synchronized void connect(WebSocketSession socket) {
-        if (clients.size() >= properties.maxClients()) {
-            closeSocket(socket, CloseStatus.POLICY_VIOLATION);
+        reapFailures();
+        if (stopping || clients.size() >= properties.maxClients()) {
+            outbound.close(socket, stopping ? CloseStatus.GOING_AWAY : CloseStatus.POLICY_VIOLATION);
             return;
         }
-        ClientSession client = new ClientSession(socket);
+        ClientSession client = new ClientSession(socket, outbound, failedClients::add);
         clients.put(client.id, client);
         send(client, Map.of("type", "welcome", "id", client.id));
-        stats();
+        send(client, statsMessage());
+        markStats();
     }
 
     public synchronized boolean acceptMessage(String id) {
+        reapFailures();
         ClientSession client = clients.get(id);
         if (client == null) return false;
         long now = System.currentTimeMillis();
         if (now - client.rateStart > 10000) { client.rateStart = now; client.rateCount = 0; }
         if (++client.rateCount <= 200) return true;
-        disconnect(id);
-        closeSocket(client.socket, CloseStatus.POLICY_VIOLATION);
+        disconnect(id, CloseStatus.POLICY_VIOLATION);
         return false;
     }
 
     public synchronized void handle(String id, JsonNode message) {
+        reapFailures();
         ClientSession client = clients.get(id);
         if (client == null) return;
         if (message == null || !message.isObject()) throw new IllegalArgumentException("Invalid message");
@@ -74,10 +85,12 @@ public class MatchmakingService {
             case "peer:report" -> report(client);
             default -> throw new IllegalArgumentException("Unknown message");
         }
-        stats();
+        reapFailures();
+        markStats();
     }
 
     public synchronized void invalid(String id) {
+        reapFailures();
         error(clients.get(id), "요청 형식을 확인해주세요.");
     }
 
@@ -87,13 +100,23 @@ public class MatchmakingService {
     }
 
     public synchronized void disconnect(String id) {
+        disconnect(id, CloseStatus.NORMAL);
+    }
+
+    public synchronized void transportError(String id) {
+        disconnect(id, CloseStatus.SERVER_ERROR);
+    }
+
+    private void disconnect(String id, CloseStatus status) {
         ClientSession client = clients.remove(id);
         if (client == null) return;
         release(client, "disconnected");
-        stats();
+        client.transport.close(status);
+        markStats();
     }
 
     public synchronized Map<String, Object> health() {
+        reapFailures();
         return Map.of("status", "ok", "online", clients.size(), "waiting", queue.size(), "activeCalls", calls.size());
     }
 
@@ -105,7 +128,7 @@ public class MatchmakingService {
         if (occupied(client)) { error(client, "이미 연결 또는 대기 중입니다."); return; }
         for (String id : List.copyOf(queue)) {
             ClientSession member = clients.get(id);
-            if (member == null || !member.socket.isOpen()) { queue.remove(id); continue; }
+            if (member == null || !member.transport.isOpen()) { queue.remove(id); continue; }
             if (!id.equals(client.id) && !member.blocked.contains(client.id) && !client.blocked.contains(id)) {
                 pair(member, client, null);
                 return;
@@ -218,34 +241,63 @@ public class MatchmakingService {
     }
 
     private void send(ClientSession client, Map<String, Object> message) {
-        if (client == null || !client.socket.isOpen()) return;
+        if (client == null || !client.transport.isOpen()) return;
         Map<String, Object> payload = new HashMap<>(message);
         if (client.attemptId != null) payload.put("attemptId", client.attemptId);
-        try { client.socket.sendMessage(new TextMessage(mapper.writeValueAsString(payload))); }
-        catch (IOException | RuntimeException exception) { closeSocket(client.socket, CloseStatus.SERVER_ERROR); }
+        try { client.transport.send(new TextMessage(mapper.writeValueAsBytes(payload))); }
+        catch (IOException | RuntimeException exception) {
+            failedClients.add(client.id);
+            client.transport.close(CloseStatus.SERVER_ERROR);
+        }
     }
 
-    private void stats() {
-        Map<String, Object> message = Map.of("type", "stats", "online", clients.size(), "waiting", queue.size());
+    private Map<String, Object> statsMessage() {
+        return Map.of("type", "stats", "online", clients.size(), "waiting", queue.size());
+    }
+
+    private void markStats() {
+        statsDirty = !statsMessage().equals(lastStats);
+    }
+
+    @Scheduled(fixedDelay = 100)
+    public synchronized void flushStats() {
+        reapFailures();
+        if (!statsDirty) return;
+        Map<String, Object> message = statsMessage();
+        lastStats = message;
+        statsDirty = false;
         for (ClientSession client : List.copyOf(clients.values())) send(client, message);
     }
 
-    private void closeSocket(WebSocketSession socket, CloseStatus status) {
-        try { socket.close(status); } catch (IOException ignored) {}
+    private void reapFailures() {
+        String id;
+        while ((id = failedClients.poll()) != null) disconnect(id);
+    }
+
+    @Scheduled(fixedDelay = 1000)
+    public void reapSlowClients() {
+        reapSlowClients(System.nanoTime());
+    }
+
+    void reapSlowClients(long now) {
+        outbound.retryCloses();
+        List<ClientSession> active;
+        synchronized (this) { active = List.copyOf(clients.values()); }
+        for (ClientSession client : active) client.transport.checkTimeout(now);
+        synchronized (this) { reapFailures(); }
     }
 
     @Scheduled(fixedDelay = 30000)
     public synchronized void heartbeat() {
+        reapFailures();
         long now = System.currentTimeMillis();
         for (ClientSession client : List.copyOf(clients.values())) {
-            if (!client.alive || !client.socket.isOpen()) {
-                disconnect(client.id);
-                closeSocket(client.socket, CloseStatus.SESSION_NOT_RELIABLE);
+            if (!client.alive || !client.transport.isOpen()) {
+                disconnect(client.id, CloseStatus.SESSION_NOT_RELIABLE);
                 continue;
             }
             client.alive = false;
-            try { client.socket.sendMessage(new PingMessage()); }
-            catch (IOException | RuntimeException exception) { disconnect(client.id); closeSocket(client.socket, CloseStatus.SERVER_ERROR); }
+            client.transport.send(new PingMessage());
             if (queue.contains(client.id) && now - client.waitingSince > 600000) {
                 release(client, "expired");
                 send(client, Map.of("type", "expired", "message", "대기 시간이 만료되었습니다. 다시 시작해주세요."));
@@ -262,18 +314,26 @@ public class MatchmakingService {
             }
         }
         reports.removeIf(report -> now - report.createdAt > 3600000);
-        stats();
+        reapFailures();
+        markStats();
     }
 
     @PreDestroy
-    public synchronized void shutdown() {
-        List<ClientSession> active = List.copyOf(clients.values());
-        clients.clear();
-        queue.clear();
-        calls.clear();
-        rooms.clear();
-        reports.clear();
-        for (ClientSession client : active) closeSocket(client.socket, CloseStatus.GOING_AWAY);
+    public void shutdown() {
+        List<ClientSession> active;
+        synchronized (this) {
+            stopping = true;
+            active = List.copyOf(clients.values());
+            clients.clear();
+            queue.clear();
+            calls.clear();
+            rooms.clear();
+            reports.clear();
+            failedClients.clear();
+            statsDirty = false;
+        }
+        for (ClientSession client : active) client.transport.close(CloseStatus.GOING_AWAY);
+        outbound.shutdown();
     }
 
     private record Room(String owner, long createdAt) {}
