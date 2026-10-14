@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+base_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+wrapper_dir="$base_dir/.mvn/wrapper"
+wrapper_jar="$wrapper_dir/maven-wrapper.jar"
+expected_hash=4e2fbf6554bc8a4702cdfdd3bef464f423393d784ddbb037216320ce55d5e4e1
+verify_wrapper() {
+  [ -f "$1" ] && [ "$(shasum -a 256 "$1" | cut -d ' ' -f 1)" = "$expected_hash" ]
+}
+if ! verify_wrapper "$wrapper_jar"; then
+  mkdir -p "$wrapper_dir"
+  temporary_jar=$(mktemp "$wrapper_dir/download.XXXXXX")
+  trap 'rm -f "$temporary_jar"' EXIT HUP INT TERM
+  curl --fail --silent --show-error --location https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.3.4/maven-wrapper-3.3.4.jar -o "$temporary_jar"
+  verify_wrapper "$temporary_jar" || { printf '%s\n' 'Maven wrapper checksum mismatch' >&2; exit 1; }
+  mv "$temporary_jar" "$wrapper_jar"
+  trap - EXIT HUP INT TERM
+fi
+java_command=java
+if [ -n "${JAVA_HOME:-}" ]; then java_command="$JAVA_HOME/bin/java"; fi
+exec "$java_command" "-Dmaven.multiModuleProjectDirectory=$base_dir" -classpath "$wrapper_jar" org.apache.maven.wrapper.MavenWrapperMain -f "$base_dir/pom.xml" "$@"
