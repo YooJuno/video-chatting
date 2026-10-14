@@ -6,3 +6,8 @@ node_modules/
 coverage/
 playwright-report/
 test-results/
+frontend/dist/
+backend/target/
+.tools/
+backend/.mvn/wrapper/maven-wrapper.jar
+*.log
